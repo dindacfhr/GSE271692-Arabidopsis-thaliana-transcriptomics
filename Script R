@@ -1,0 +1,177 @@
+## A. Install dan Load Package
+if (!requireNamespace("BiocManager", quietly=TRUE))
+install.packages("BiocManager")
+
+BiocManager::install(c(
+"GEOquery",
+"limma",
+"umap",
+"pheatmap",
+"clusterProfiler",
+"org.At.tair.db",
+"EnhancedVolcano"
+))
+
+install.packages("ggplot2")
+
+library(GEOquery)
+library(limma)
+library(umap)
+library(pheatmap)
+library(clusterProfiler)
+library(org.At.tair.db)
+library(EnhancedVolcano)
+library(ggplot2)
+
+## B. Download Dataset GEO
+
+gse <- getGEO("GSE271692", GSEMatrix = TRUE)
+
+exprSet <- exprs(gse[[1]])
+pdata <- pData(gse[[1]])
+
+### Cek data
+
+dim(exprSet)
+head(exprSet)
+
+## C. Log Transform
+
+if(max(exprSet) > 100){
+  exprSet <- log2(exprSet + 1)
+}
+
+## D. Tentukan Grup (MS vs. ABA)
+
+group <- ifelse(grepl("ABA", pdata$title, ignore.case=TRUE),
+                "ABA","MS")
+
+group <- factor(group)
+
+pdata$group <- group
+table(group)
+
+## 1. Boxplot QC
+
+boxplot(exprSet,
+        outline=FALSE,
+        las=2,
+        main="Expression Distribution (Boxplot)")
+
+## 2. Density Plot QC
+
+colors <- rainbow(ncol(exprSet))
+
+plot(density(exprSet[,1]),
+     col=colors[1],
+     main="Density Plot",
+     xlab="Expression")
+
+for(i in 2:ncol(exprSet)){
+  lines(density(exprSet[,i]), col=colors[i])
+}
+
+## 3. UMAP Clustering
+
+umap_res <- umap(t(exprSet))
+
+umap_df <- data.frame(
+UMAP1 = umap_res$layout[,1],
+UMAP2 = umap_res$layout[,2],
+group = group
+)
+
+ggplot(umap_df, aes(UMAP1, UMAP2, color=group)) +
+geom_point(size=4) +
+theme_minimal() +
+ggtitle("UMAP clustering")
+
+## 4. Differentian Expression (limma)
+
+design <- model.matrix(~group)
+
+fit <- lmFit(exprSet, design)
+fit <- eBayes(fit)
+
+deg <- topTable(fit,
+                coef=2,
+                number=Inf,
+                adjust="BH")
+
+### Filter DEG
+
+deg_sig <- deg[deg$adj.P.Val < 0.05 & abs(deg$logFC) > 1, ]
+nrow(deg_sig)
+
+## 5. Volcano Plot
+
+EnhancedVolcano(deg,
+lab = rownames(deg),
+x = 'logFC',
+y = 'adj.P.Val',
+pCutoff = 0.05,
+FCcutoff = 1,
+title = "MS vs ABA Differential Expression")
+
+## 6. Heatmap Top 50 DEGs
+
+top_genes <- rownames(deg_sig)[1:50]
+
+heat_data <- exprSet[top_genes,]
+
+annotation <- data.frame(Group=group)
+rownames(annotation) <- colnames(exprSet)
+
+pheatmap(heat_data,
+scale="row",
+annotation_col=annotation,
+show_rownames=TRUE,
+main="Top 50 DEG")
+
+## 7. Konversi TAIR -> ENTREZ
+
+gene_symbols <- rownames(deg_sig)
+
+gene_entrez <- mapIds(org.At.tair.db,
+keys = gene_symbols,
+column = "ENTREZID",
+keytype = "TAIR",
+multiVals = "first")
+
+gene_entrez <- na.omit(gene_entrez)
+
+## 8. GO Enrichment
+
+### Biological Process
+ego_bp <- enrichGO(gene_entrez,
+OrgDb = org.At.tair.db,
+ont = "BP",
+pvalueCutoff = 0.05)
+
+dotplot(ego_bp)
+
+### Molecular Function
+ego_mf <- enrichGO(gene_entrez,
+OrgDb = org.At.tair.db,
+ont = "MF",
+pvalueCutoff = 0.05)
+
+dotplot(ego_mf)
+
+### Cellular Component
+ego_cc <- enrichGO(gene_entrez,
+OrgDb = org.At.tair.db,
+ont = "CC",
+pvalueCutoff = 0.05)
+
+dotplot(ego_cc)
+
+## EXPORT HASIL
+
+write.csv(deg, "DEG_MS_vs_ABA.csv")
+
+write.csv(as.data.frame(ego_bp), "GO_BP.csv")
+
+write.csv(as.data.frame(ego_mf), "GO_MF.csv")
+
+write.csv(as.data.frame(ego_cc), "GO_CC.csv")
